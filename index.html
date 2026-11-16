@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ポケモンスリープ レシピ検索</title>
+<style>
+:root { color-scheme: light; font-family: system-ui, sans-serif; }
+body { max-width: 1100px; margin: 0 auto; padding: 16px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid currentColor; padding: 4px 8px; text-align: left; vertical-align: top; }
+th { text-align: left; }
+.wrap { overflow-x: auto; }
+.box { max-height: 320px; overflow: auto; }
+select, input, button { font-size: 16px; min-height: 36px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-end; margin-bottom: 8px; }
+.filters label { display: flex; flex-direction: column; gap: 4px; }
+.filters label.check { flex-direction: row; align-items: center; }
+.row-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+</style>
+</head>
+<body>
+<h1>ポケモンスリープ レシピ検索</h1>
+<main id="main"></main>
+<script src="data.js"></script>
+<script>
+"use strict";
+
+const STORE_KEY = "pksleep-state";
+const LEVELS = [1, 30, 60];
+const SLOT_COUNT = 5;
+const EPS = 1e-9;
+
+let state = { team: Array(SLOT_COUNT).fill(null), active: 0, days: 1 };
+
+// ---- Pure helpers (no DOM) ----
+
+function findPokemon(name) {
+  return window.PKS_DATA.pokemon.find(p => p.name === name);
+}
+
+function patternsAt(pokemon, level) {
+  return pokemon ? pokemon.sets.filter(s => s.level === level).map(s => s.pattern) : [];
+}
+
+function firstPattern(pokemon, level) {
+  const list = patternsAt(pokemon, level);
+  return list.length ? list[0] : null;
+}
+
+// Resolve the set of a team slot {name, level, pattern}
+function findSet(slot) {
+  const p = slot && findPokemon(slot.name);
+  return p ? p.sets.find(s => s.level === slot.level && s.pattern === slot.pattern) : undefined;
+}
+
+// Ingredient amounts of the team over `days` days
+function teamTotals(team, days) {
+  const totals = {};
+  for (const slot of team) {
+    const set = findSet(slot);
+    if (!set) continue;
+    for (const [name, amount] of set.items) {
+      totals[name] = (totals[name] || 0) + amount * days;
+    }
+  }
+  return totals;
+}
+
+// Whether a recipe can be cooked from the totals, and the missing amounts
+function judgeRecipe(recipe, totals) {
+  const shortages = {};
+  for (const [name, need] of Object.entries(recipe.ingredients)) {
+    const short = need - (totals[name] || 0);
+    if (short > EPS) shortages[name] = short;
+  }
+  return { ok: Object.keys(shortages).length === 0, shortages };
+}
+
+function unique(values) {
+  return [...new Set(values)].filter(v => v);
+}
+
+function sortedUnique(values) {
+  return unique(values).sort((a, b) => a.localeCompare(b, "ja"));
+}
+
+// ---- Storage (per-browser convenience, errors ignored) ----
+
+function loadState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (!saved || !Array.isArray(saved.team)) return;
+    saved.team.slice(0, SLOT_COUNT).forEach((slot, i) => {
+      const p = slot && findPokemon(slot.name);
+      if (!p) return;
+      const level = LEVELS.includes(slot.level) ? slot.level : 60;
+      const pattern = patternsAt(p, level).includes(slot.pattern) ? slot.pattern : firstPattern(p, level);
+      state.team[i] = { name: p.name, level, pattern };
+    });
+    if (Number.isInteger(saved.active) && saved.active >= 0 && saved.active < SLOT_COUNT) state.active = saved.active;
+    if (Number.isInteger(saved.days) && saved.days >= 1) state.days = saved.days;
+  } catch (e) {
+    // Unavailable or broken storage: start with an empty team
+  }
+}
+
+function saveState() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  } catch (e) {
+    // Unavailable storage: keep working without saving
+  }
+}
+
+// ---- DOM helpers ----
+
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  if (props) Object.assign(node, props);
+  node.append(...children);
+  return node;
+}
+
+function option(value, label) {
+  return el("option", { value, textContent: label });
+}
+
+function fillSelect(sel, values) {
+  sel.append(option("", "すべて"), ...values.map(v => option(v, v)));
+}
+
+function selectOf(options, value, onchange) {
+  const sel = el("select", { onchange }, ...options);
+  sel.value = value;
+  return sel;
+}
+
+function field(text, control) {
+  return el("label", {}, text, control);
+}
+
+function sec(title, ...children) {
+  return el("section", {}, el("h2", { textContent: title }), ...children);
+}
+
+function makeTable(headers, rows) {
+  return el("div", { className: "wrap" },
+    el("table", {},
+      el("thead", {}, el("tr", {}, ...headers.map(h => el("th", { textContent: h })))),
+      el("tbody", {}, ...rows)));
+}
+
+// ---- App ----
+
+function init() {
+  loadState();
+  const D = window.PKS_DATA;
+  let totals = {};
+
+  // Section 1: team
+  const teamBox = el("div");
+  const clearAllBtn = el("button", {
+    textContent: "すべて外す",
+    onclick: () => {
+      state.team = Array(SLOT_COUNT).fill(null);
+      state.active = 0;
+      renderAll();
+    }
+  });
+
+  // Section 2: picker
+  const nameIn = el("input", { type: "text", oninput: () => renderPicker() });
+  const specSel = el("select", { onchange: () => renderPicker() });
+  const sleepSel = el("select", { onchange: () => renderPicker() });
+  const ingSel = el("select", { onchange: () => renderPicker() });
+  const berrySel = el("select", { onchange: () => renderPicker() });
+  const pickCount = el("p");
+  const pickBox = el("div", { className: "box" });
+  const clearFilterBtn = el("button", {
+    textContent: "条件をクリア",
+    onclick: () => {
+      nameIn.value = "";
+      for (const s of [specSel, sleepSel, ingSel, berrySel]) s.value = "";
+      renderPicker();
+    }
+  });
+
+  // Section 3: totals
+  const daysIn = el("input", {
+    type: "number", min: "1", step: "1", value: String(state.days),
+    oninput: () => {
+      const v = Math.floor(Number(daysIn.value));
+      if (v >= 1) {
+        state.days = v;
+        renderAll();
+      }
+    }
+  });
+  const totalBox = el("div");
+
+  // Section 4: recipes
+  const recCatSel = el("select", { onchange: () => renderRecipes() });
+  const recIngSel = el("select", { onchange: () => renderRecipes() });
+  const recOkChk = el("input", { type: "checkbox", onchange: () => renderRecipes() });
+  const recCount = el("p");
+  const recBox = el("div");
+
+  function renderTeam() {
+    const rows = state.team.map((slot, i) => {
+      const active = i === state.active;
+      const tr = el("tr", {}, el("td", { textContent: (active ? "▶ " : "") + (i + 1) }));
+      tr.style.fontWeight = active ? "bold" : "";
+      if (!slot) {
+        tr.append(el("td", { textContent: "未選択" }), el("td"), el("td"), el("td"));
+      } else {
+        const p = findPokemon(slot.name);
+        const levelSel = selectOf(LEVELS.map(l => option(String(l), String(l))), String(slot.level), e => {
+          slot.level = Number(e.target.value);
+          slot.pattern = firstPattern(p, slot.level);
+          renderAll();
+        });
+        const patSel = selectOf(patternsAt(p, slot.level).map(x => option(x, x)), slot.pattern || "", e => {
+          slot.pattern = e.target.value;
+          renderAll();
+        });
+        const set = findSet(slot);
+        const gain = set ? set.items.map(([n, a]) => `${n} ${a.toFixed(1)}`).join("、") : "";
+        tr.append(
+          el("td", { textContent: p.name }),
+          el("td", {}, levelSel),
+          el("td", {}, patSel),
+          el("td", { textContent: gain }));
+      }
+      tr.append(el("td", {},
+        el("div", { className: "row-buttons" },
+          el("button", { textContent: "選ぶ", onclick: () => { state.active = i; renderAll(); } }),
+          el("button", { textContent: "外す", disabled: !slot, onclick: () => { state.team[i] = null; renderAll(); } }))));
+      return tr;
+    });
+    teamBox.replaceChildren(makeTable(["枠", "ポケモン", "レベル", "食材構成", "獲得食材", ""], rows));
+  }
+
+  function renderPicker() {
+    const q = nameIn.value.trim();
+    const list = D.pokemon.filter(p =>
+      p.name.includes(q) &&
+      (!specSel.value || p.specialty === specSel.value) &&
+      (!sleepSel.value || p.sleep === sleepSel.value) &&
+      (!berrySel.value || p.berry === berrySel.value) &&
+      (!ingSel.value || p.sets.some(s => s.items.some(it => it[0] === ingSel.value))));
+    pickCount.textContent = `${list.length}匹`;
+    const rows = list.map(p => el("tr", {},
+      el("td", { textContent: p.name }),
+      el("td", { textContent: p.specialty }),
+      el("td", { textContent: p.sleep }),
+      el("td", { textContent: p.berry }),
+      el("td", { textContent: unique([].concat(...p.sets.map(s => s.items.map(it => it[0])))).join("、") }),
+      el("td", {}, el("button", { textContent: "追加", onclick: () => addPokemon(p.name) }))));
+    pickBox.replaceChildren(makeTable(["名前", "得意", "睡眠", "きのみ", "食材", ""], rows));
+  }
+
+  function addPokemon(name) {
+    state.team[state.active] = { name, level: 60, pattern: firstPattern(findPokemon(name), 60) };
+    for (let k = 1; k < SLOT_COUNT; k++) {
+      const i = (state.active + k) % SLOT_COUNT;
+      if (!state.team[i]) {
+        state.active = i;
+        break;
+      }
+    }
+    renderAll();
+  }
+
+  function renderTotals() {
+    if (!state.team.some(Boolean)) {
+      totalBox.replaceChildren(el("p", { textContent: "ポケモンを選んでください" }));
+      return;
+    }
+    const rows = Object.entries(totals)
+      .filter(([, a]) => a > 0)
+      .sort((x, y) => y[1] - x[1])
+      .map(([n, a]) => el("tr", {}, el("td", { textContent: n }), el("td", { textContent: a.toFixed(1) })));
+    totalBox.replaceChildren(makeTable(["食材", "獲得量"], rows));
+  }
+
+  function renderRecipes() {
+    const cat = recCatSel.value;
+    const ing = recIngSel.value;
+    const onlyOk = recOkChk.checked;
+    const list = D.recipes
+      .map(r => ({ r, j: judgeRecipe(r, totals) }))
+      .filter(x => (!cat || x.r.category === cat) &&
+        (!ing || x.r.ingredients[ing] !== undefined) &&
+        (!onlyOk || x.j.ok))
+      .sort((a, b) => Number(b.j.ok) - Number(a.j.ok) || b.r.energy - a.r.energy);
+    recCount.textContent = `${list.length}件`;
+    const rows = list.map(({ r, j }) => {
+      const req = el("td");
+      Object.entries(r.ingredients).forEach(([name, need], k) => {
+        if (k > 0) req.append("、");
+        const short = j.shortages[name];
+        const text = `${name}×${need}`;
+        req.append(short === undefined ? text : el("strong", { textContent: `${text}（不足 ${short.toFixed(1)}）` }));
+      });
+      return el("tr", {},
+        el("td", { textContent: j.ok ? "○" : "×" }),
+        el("td", { textContent: r.category }),
+        el("td", { textContent: r.name }),
+        el("td", { textContent: r.energy.toLocaleString() }),
+        el("td", { textContent: String(r.total) }),
+        req);
+    });
+    recBox.replaceChildren(makeTable(["判定", "種類", "料理名", "エナジー", "食材計", "必要食材"], rows));
+  }
+
+  function renderAll() {
+    totals = teamTotals(state.team, state.days);
+    renderTeam();
+    renderTotals();
+    renderRecipes();
+    saveState();
+  }
+
+  // Build the page
+  const filters = el("div", { className: "filters" },
+    field("名前", nameIn), field("得意タイプ", specSel), field("睡眠タイプ", sleepSel),
+    field("食材", ingSel), field("きのみ", berrySel), clearFilterBtn);
+  const recFilters = el("div", { className: "filters" },
+    field("種類", recCatSel), field("食材", recIngSel),
+    el("label", { className: "check" }, recOkChk, "作れるものだけ"));
+
+  document.getElementById("main").replaceChildren(
+    sec("手持ち", teamBox, el("p", {}, clearAllBtn)),
+    sec("ポケモンを選ぶ", filters, pickCount, pickBox),
+    sec("食材合計", field("集計日数", daysIn), totalBox),
+    sec("レシピ", recFilters, recCount, recBox));
+
+  fillSelect(specSel, sortedUnique(D.pokemon.map(p => p.specialty)));
+  fillSelect(sleepSel, sortedUnique(D.pokemon.map(p => p.sleep)));
+  fillSelect(berrySel, sortedUnique(D.pokemon.map(p => p.berry)));
+  fillSelect(ingSel, D.ingredients);
+  fillSelect(recCatSel, sortedUnique(D.recipes.map(r => r.category)));
+  fillSelect(recIngSel, D.ingredients);
+
+  renderPicker();
+  renderAll();
+}
+
+if (window.PKS_DATA) {
+  init();
+} else {
+  document.getElementById("main").textContent = "data.js が見つかりません";
+}
+</script>
+</body>
+</html>

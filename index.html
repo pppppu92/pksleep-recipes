@@ -16,6 +16,8 @@ select, input, button { font-size: 16px; min-height: 36px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-end; margin-bottom: 8px; }
 .filters label { display: flex; flex-direction: column; gap: 4px; }
 .filters label.check { flex-direction: row; align-items: center; }
+summary { cursor: pointer; padding: 8px 0; }
+details details { margin-left: 16px; }
 .row-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 </style>
 </head>
@@ -75,6 +77,22 @@ function judgeRecipe(recipe, totals) {
     if (short > EPS) shortages[name] = short;
   }
   return { ok: Object.keys(shortages).length === 0, shortages };
+}
+
+// Top pokemon by daily amount of one ingredient (or of all ingredients when
+// ingredient is ""), using each pokemon's best pattern at the given level.
+function rankPokemon(level, ingredient, limit) {
+  const rows = [];
+  for (const p of window.PKS_DATA.pokemon) {
+    let best = null;
+    for (const s of p.sets) {
+      if (s.level !== level) continue;
+      const amount = s.items.reduce((sum, [n, a]) => sum + (!ingredient || n === ingredient ? a : 0), 0);
+      if (amount > 0 && (!best || amount > best.amount)) best = { name: p.name, pattern: s.pattern, amount };
+    }
+    if (best) rows.push(best);
+  }
+  return rows.sort((a, b) => b.amount - a.amount).slice(0, limit);
 }
 
 function unique(values) {
@@ -322,6 +340,20 @@ function init() {
     saveState();
   }
 
+  // Ranking: one collapsible table per ingredient, plus the total
+  const rankBox = el("div", {});
+  function renderRanking() {
+    const level = Number(rankLvSel.value);
+    rankBox.replaceChildren(...["", ...D.ingredients].map(ing =>
+      el("details", {}, el("summary", { textContent: ing || "総獲得数" }),
+        makeTable(["順位", "ポケモン", "食材構成", "獲得数"],
+          rankPokemon(level, ing, 20).map((r, i) => el("tr", {},
+            el("td", { textContent: String(i + 1) }), el("td", { textContent: r.name }),
+            el("td", { textContent: r.pattern }), el("td", { textContent: r.amount.toFixed(1) })))))));
+  }
+  const rankLvSel = selectOf(LEVELS.map(l => option(String(l), String(l))), "60", renderRanking);
+  renderRanking();
+
   // Build the page
   const filters = el("div", { className: "filters" },
     field("名前", nameIn), field("得意タイプ", specSel), field("睡眠タイプ", sleepSel),
@@ -334,7 +366,10 @@ function init() {
     sec("手持ち", teamBox, el("p", {}, clearAllBtn)),
     sec("ポケモンを選ぶ", filters, pickCount, pickBox),
     sec("食材合計", field("集計日数", daysIn), totalBox),
-    sec("レシピ", recFilters, recCount, recBox));
+    sec("レシピ", recFilters, recCount, recBox),
+    el("section", {}, el("details", {},
+      el("summary", { textContent: "食材獲得数ランキング（1日あたり・上位20）" }),
+      el("div", { className: "filters" }, field("レベル", rankLvSel)), rankBox)));
 
   fillSelect(specSel, sortedUnique(D.pokemon.map(p => p.specialty)));
   fillSelect(sleepSel, sortedUnique(D.pokemon.map(p => p.sleep)));

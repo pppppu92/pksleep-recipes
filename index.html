@@ -278,8 +278,8 @@ function init() {
     pickBox.replaceChildren(makeTable(["名前", "得意", "睡眠", "きのみ", "食材", ""], rows));
   }
 
-  function addPokemon(name) {
-    state.team[state.active] = { name, level: 60, pattern: firstPattern(findPokemon(name), 60) };
+  function addPokemon(name, level = 60, pattern = firstPattern(findPokemon(name), level)) {
+    state.team[state.active] = { name, level, pattern };
     for (let k = 1; k < SLOT_COUNT; k++) {
       const i = (state.active + k) % SLOT_COUNT;
       if (!state.team[i]) {
@@ -337,7 +337,41 @@ function init() {
     renderTeam();
     renderTotals();
     renderRecipes();
+    renderReverse();
     saveState();
+  }
+
+  // Reverse lookup: every pokemon that yields each ingredient of one recipe
+  const revCatSel = el("select", { onchange: () => { fillRevRecipes(); renderReverse(); } });
+  const revRecSel = el("select", { onchange: () => renderReverse() });
+  const revLvSel = selectOf(LEVELS.map(l => option(String(l), String(l))), "60", () => renderReverse());
+  const revBox = el("div");
+
+  function fillRevRecipes() {
+    revRecSel.replaceChildren(option("", "選択してください"),
+      ...D.recipes.filter(r => !revCatSel.value || r.category === revCatSel.value).map(r => option(r.name, r.name)));
+  }
+
+  function renderReverse() {
+    const recipe = D.recipes.find(r => r.name === revRecSel.value);
+    if (!recipe) {
+      revBox.replaceChildren(el("p", { textContent: "料理を選んでください" }));
+      return;
+    }
+    const level = Number(revLvSel.value);
+    const shortages = judgeRecipe(recipe, totals).shortages;
+    revBox.replaceChildren(...Object.entries(recipe.ingredients).map(([ing, need]) => {
+      const short = shortages[ing];
+      const rows = rankPokemon(level, ing, Infinity).map(r => el("tr", {},
+        el("td", { textContent: r.name }),
+        el("td", { textContent: r.pattern }),
+        el("td", { textContent: r.amount.toFixed(1) }),
+        el("td", {}, el("button", { textContent: "追加", onclick: () => addPokemon(r.name, level, r.pattern) }))));
+      const status = short === undefined ? "手持ちで足りる" : `手持ちでは不足 ${short.toFixed(1)}`;
+      return el("div", {},
+        el("h3", { textContent: `${ing}×${need}（${status}）候補 ${rows.length}匹` }),
+        el("div", { className: "box" }, makeTable(["ポケモン", "食材構成", "1日の獲得数", ""], rows)));
+    }));
   }
 
   // Ranking: one collapsible table per ingredient, plus the total
@@ -367,6 +401,10 @@ function init() {
     sec("ポケモンを選ぶ", filters, pickCount, pickBox),
     sec("食材合計", field("集計日数", daysIn), totalBox),
     sec("レシピ", recFilters, recCount, recBox),
+    sec("レシピから逆引き",
+      el("div", { className: "filters" },
+        field("種類", revCatSel), field("料理", revRecSel), field("レベル", revLvSel)),
+      revBox),
     el("section", {}, el("details", {},
       el("summary", { textContent: "食材獲得数ランキング（1日あたり・上位20）" }),
       el("div", { className: "filters" }, field("レベル", rankLvSel)), rankBox)));
@@ -377,6 +415,8 @@ function init() {
   fillSelect(ingSel, D.ingredients);
   fillSelect(recCatSel, sortedUnique(D.recipes.map(r => r.category)));
   fillSelect(recIngSel, D.ingredients);
+  fillSelect(revCatSel, sortedUnique(D.recipes.map(r => r.category)));
+  fillRevRecipes();
 
   renderPicker();
   renderAll();

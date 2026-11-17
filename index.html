@@ -19,6 +19,8 @@ select, input, button { font-size: 16px; min-height: 36px; }
 summary { cursor: pointer; padding: 8px 0; }
 details details { margin-left: 16px; }
 .row-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tabs button[aria-pressed="true"] { font-weight: bold; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -33,7 +35,7 @@ const LEVELS = [1, 30, 60];
 const SLOT_COUNT = 5;
 const EPS = 1e-9;
 
-let state = { team: Array(SLOT_COUNT).fill(null), active: 0, days: 1 };
+let state = { team: Array(SLOT_COUNT).fill(null), active: 0, days: 1, tab: 0 };
 
 // ---- Pure helpers (no DOM) ----
 
@@ -118,6 +120,7 @@ function loadState() {
     });
     if (Number.isInteger(saved.active) && saved.active >= 0 && saved.active < SLOT_COUNT) state.active = saved.active;
     if (Number.isInteger(saved.days) && saved.days >= 1) state.days = saved.days;
+    if (Number.isInteger(saved.tab) && saved.tab >= 0 && saved.tab < 4) state.tab = saved.tab;
   } catch (e) {
     // Unavailable or broken storage: start with an empty team
   }
@@ -396,18 +399,32 @@ function init() {
     field("種類", recCatSel), field("食材", recIngSel),
     el("label", { className: "check" }, recOkChk, "作れるものだけ"));
 
-  document.getElementById("main").replaceChildren(
-    sec("手持ち", teamBox, el("p", {}, clearAllBtn)),
-    sec("ポケモンを選ぶ", filters, pickCount, pickBox),
-    sec("食材合計", field("集計日数", daysIn), totalBox),
-    sec("レシピ", recFilters, recCount, recBox),
-    sec("レシピから逆引き",
+  const panels = [
+    el("div", {},
+      sec("手持ち", teamBox, el("p", {}, clearAllBtn)),
+      sec("ポケモンを選ぶ", filters, pickCount, pickBox),
+      sec("食材合計", field("集計日数", daysIn), totalBox)),
+    el("div", {}, sec("レシピ", recFilters, recCount, recBox)),
+    el("div", {}, sec("レシピから逆引き",
       el("div", { className: "filters" },
         field("種類", revCatSel), field("料理", revRecSel), field("レベル", revLvSel)),
-      revBox),
-    el("section", {}, el("details", {},
-      el("summary", { textContent: "食材獲得数ランキング（1日あたり・上位20）" }),
-      el("div", { className: "filters" }, field("レベル", rankLvSel)), rankBox)));
+      revBox)),
+    el("div", {}, sec("食材獲得数ランキング（1日あたり・上位20）",
+      el("div", { className: "filters" }, field("レベル", rankLvSel)), rankBox)),
+  ];
+  const tabButtons = ["編成", "レシピ", "逆引き", "ランキング"].map((name, i) =>
+    el("button", { type: "button", textContent: name, onclick: () => showTab(i) }));
+  const tabBar = el("nav", { className: "tabs" }, ...tabButtons);
+
+  function showTab(i) {
+    state.tab = i;
+    panels.forEach((panel, index) => { panel.hidden = (index !== i); });
+    tabButtons.forEach((btn, index) => btn.setAttribute("aria-pressed", String(index === i)));
+    saveState();
+  }
+
+  document.getElementById("main").replaceChildren(tabBar, ...panels);
+  showTab(state.tab);
 
   fillSelect(specSel, sortedUnique(D.pokemon.map(p => p.specialty)));
   fillSelect(sleepSel, sortedUnique(D.pokemon.map(p => p.sleep)));
